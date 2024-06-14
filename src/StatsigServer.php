@@ -69,7 +69,7 @@ class StatsigServer
             );
             return new FeatureGate($gate, $res->bool_value, $res->rule_id, $res->secondary_exposures, $res->group_name, $res->id_type);
         };
-        $fallback = function () {
+        $fallback = function () use ($gate) {
             return new FeatureGate($gate);
         };
         return $this->error_boundary->capture($task, $fallback);
@@ -141,9 +141,18 @@ class StatsigServer
         return $this->error_boundary->swallow($task);
     }
 
-    function getClientInitializeResponse(StatsigUser $user, ?string $client_sdk_key = null)
+    function getClientInitializeResponse(StatsigUser $user, ?string $client_sdk_key = null, ?string $hash = null)
     {
-        return $this->evaluator->getClientInitializeResponse($user, $client_sdk_key);
+        $task = function () use ($user, $client_sdk_key, $hash) {
+            $res = $this->evaluator->getClientInitializeResponse($user, $client_sdk_key, $hash);
+            if ($res === null || count($res) === 0) {
+                $this->error_boundary->logException(new \Exception('Failed to get initialize response'), 'getClientInitializeResponse', ['client_sdk_key' => $client_sdk_key, 'hash' => $hash]);
+            }
+            return $res;
+        };
+        return $this->error_boundary->capture($task, function () {
+            return [];
+        }, 'getClientInitializeResponse', ['client_sdk_key' => $client_sdk_key, 'hash' => $hash]);
     }
 
     function flush()

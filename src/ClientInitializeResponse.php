@@ -8,13 +8,15 @@ class ClientInitializeResponse
     private StatsigStore $store;
     private \Closure $eval_func;
     private ?string $client_sdk_key;
+    private ?string $hash;
 
-    function __construct(StatsigUser $user, StatsigStore $store, callable $eval_func, ?string $client_sdk_key)
+    function __construct(StatsigUser $user, StatsigStore $store, callable $eval_func, ?string $client_sdk_key, ?string $hash)
     {
         $this->user = $user;
         $this->store = $store;
         $this->eval_func = \Closure::fromCallable($eval_func);
         $this->client_sdk_key = $client_sdk_key;
+        $this->hash = $hash;
     }
 
     private function getEvalResult($config_spec): ConfigEvaluation
@@ -24,21 +26,13 @@ class ClientInitializeResponse
 
     private function hashName(string $name)
     {
-        return base64_encode(hash("sha256", $name, true));
-    }
-
-    private function cleanExposures(array $exposures)
-    {
-        $seen = [];
-        $result = [];
-        foreach ($exposures as $exposure) {
-            $key = sprintf("%s|%s|%s", $exposure["gate"], $exposure["gateValue"], $exposure["ruleID"]);
-            if (!array_key_exists($key, $seen)) {
-                $seen[$key] = true;
-                array_push($result, $exposure);
-            }
+        if ($this-> hash == "none") {
+            return $name;
         }
-        return $result;
+        if ($this->hash == "djb2") {
+            return HashingUtils::djb2($name);
+        }
+        return base64_encode(hash("sha256", $name, true));
     }
 
     private function evalResultToBaseResponse(string $name, ConfigEvaluation $eval_result)
@@ -47,7 +41,7 @@ class ClientInitializeResponse
         $base_response = array(
             "name" => $hashed_name,
             "rule_id" => $eval_result->rule_id,
-            "secondary_exposures" => $this->cleanExposures($eval_result->secondary_exposures),
+            "secondary_exposures" => $eval_result->secondary_exposures,
         );
         return array($hashed_name, $base_response);
     }
@@ -103,7 +97,7 @@ class ClientInitializeResponse
             "value" => $eval_result->json_value,
             "group" => $eval_result->rule_id,
             "is_device_based" => strtolower($config_spec["idType"] ?? "") === "stableid",
-            "undelegated_secondary_exposures" => $this->cleanExposures($eval_result->undelegated_secondary_exposures),
+            "undelegated_secondary_exposures" => $eval_result->undelegated_secondary_exposures,
             "explicit_parameters" => $config_spec["explicitParameters"] ?? [],
         ));
         $delegate = $eval_result->allocated_experiment;
@@ -128,6 +122,9 @@ class ClientInitializeResponse
 
     function getFormattedResponse()
     {
+        if ($this->store->getTime() == 0) {
+            return [];
+        }
         $target_app_id = null;
         if ($this->client_sdk_key !== null) {
             $target_app_id = $this->store->getAppIDFromKey($this->client_sdk_key);
@@ -175,8 +172,13 @@ class ClientInitializeResponse
             "has_updates" => true,
             "generator" => "statsig-php-sdk",
             "evaluated_keys" => $evaluated_keys,
-            "time" => 0,
-            "user_hash" => $this->user->toHashWithoutStableID(),
+            "time" => $this->store->getTime(),
+            "user" => $this->user->toEvaluationDictionary(),
+            "hash_used" => $this->hash ?? 'sha256',
+            "sdkInfo" => (object)[
+                "sdkType" => StatsigMetadata::SDK_TYPE,
+                "sdkVersion" => StatsigMetadata::VERSION,
+            ],
         );
         return $response;
     }
